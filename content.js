@@ -6,9 +6,9 @@
   'use strict';
 
   // 設定
-  const CHECK_DELAY = 1000;  // 画像存在チェック間の遅延 (ミリ秒) - 1秒に延長
+  const CHECK_DELAY = 2000;  // 画像存在チェック間の遅延 (ミリ秒) - 2秒に延長
   const MAX_IMAGES = 40;     // 最大画像枚数
-  const MAX_ERRORS = 5;      // 連続エラー時に終了する数 - 5回に延長
+  const MAX_ERRORS = 8;      // 連続エラー時に終了する数 - 8回に延長
 
   // デバッグログ
   const DEBUG = true;
@@ -72,31 +72,51 @@
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  // 画像URLを確認 (複数パターンに対応)
+  // 画像URLを確認 (より多くのパターンに対応)
   async function checkImageUrl(itemId, index) {
-    // パターン1: 標準の画像URL
-    const standardUrl = `https://static.mercdn.net/item/detail/orig/photos/${itemId}_${index}.jpg`;
+    // 試行するパターンのリスト
+    const urlPatterns = [
+      // パターン1: 標準の画像URL
+      `https://static.mercdn.net/item/detail/orig/photos/${itemId}_${index}.jpg`,
+      // パターン2: 0埋め (1桁→2桁)
+      `https://static.mercdn.net/item/detail/orig/photos/${itemId}_${String(index).padStart(2, '0')}.jpg`,
+      // パターン3: origなしバージョン
+      `https://static.mercdn.net/item/detail/photos/${itemId}_${index}.jpg`,
+      // パターン4: 拡張子なし (Content-Typeで判断)
+      `https://static.mercdn.net/item/detail/orig/photos/${itemId}_${index}`,
+      // パターン5: 別フォーマット (PNG)
+      `https://static.mercdn.net/item/detail/orig/photos/${itemId}_${index}.png`
+    ];
     
-    try {
-      const response = await fetch(standardUrl, { method: 'HEAD' });
-      if (response.ok) {
-        return { success: true, url: standardUrl };
+    // 各パターンを試行
+    for (const url of urlPatterns) {
+      try {
+        // HEADリクエストの代わりに少しのデータだけを取得するGETリクエスト
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000); // 5秒タイムアウト
+        
+        const response = await fetch(url, { 
+          method: 'GET',
+          headers: { 'Range': 'bytes=0-1023' }, // 最初の1KBだけ取得
+          signal: controller.signal
+        });
+        
+        clearTimeout(timeoutId);
+        
+        if (response.ok || response.status === 206) {
+          logDebug(`画像パターン発見: ${url}`);
+          return { success: true, url: url };
+        }
+      } catch (err) {
+        logDebug(`URL確認エラー (${url}): ${err.message}`);
+        // 個別のエラーは無視して次のパターンを試す
       }
       
-      // パターン2: 別の可能性があるフォーマット (例えば数字の前に0をつける)
-      // 例: m1234_1.jpg → m1234_01.jpg
-      const paddedIndexUrl = `https://static.mercdn.net/item/detail/orig/photos/${itemId}_${String(index).padStart(2, '0')}.jpg`;
-      
-      const response2 = await fetch(paddedIndexUrl, { method: 'HEAD' });
-      if (response2.ok) {
-        return { success: true, url: paddedIndexUrl };
-      }
-      
-      return { success: false };
-    } catch (err) {
-      logDebug(`Image check error: ${err.message}`);
-      return { success: false, error: err.message };
+      // パターン間の遅延
+      await sleep(500);
     }
+    
+    return { success: false };
   }
 
   // すべての画像をダウンロード
@@ -114,6 +134,11 @@
       const itemId = itemIdMatch[1];
       logDebug(`商品ID: ${itemId}`);
       
+      // 直接DOM内から画像数を判断する試み
+      const domImages = document.querySelectorAll('img[src*="' + itemId + '"]');
+      let estimatedImageCount = domImages.length > 0 ? domImages.length : MAX_IMAGES;
+      logDebug(`推定画像数: ${estimatedImageCount}`);
+      
       // ステータス表示要素を作成
       const status = createStatusElement('ダウンロードを開始します...');
       
@@ -128,11 +153,11 @@
         button.innerText = 'ダウンロード中...';
       }
       
-      // 1枚ずつ処理
-      for (let i = 1; i <= MAX_IMAGES; i++) {
+      // 画像取得ループ
+      for (let i = 1; i <= Math.max(estimatedImageCount + 5, MAX_IMAGES); i++) {
         try {
           // 状況表示を更新
-          status.innerText = `画像を探しています... (${i}/${MAX_IMAGES})`;
+          status.innerText = `画像を探しています... (${i}/${Math.min(estimatedImageCount + 5, MAX_IMAGES)})`;
           
           // 画像の存在チェック (遅延を入れる)
           await sleep(CHECK_DELAY);
@@ -168,6 +193,9 @@
           successCount++;
           // ステータス更新 (1枚ごと)
           status.innerText = `${successCount}枚の画像をダウンロード中...`;
+          
+          // 成功したら少し待機
+          await sleep(1000);
           
         } catch (err) {
           logDebug(`画像${i}の処理中にエラー: ${err.message}`);
