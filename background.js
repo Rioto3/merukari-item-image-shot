@@ -5,8 +5,9 @@
 
 // ダウンロードキューと同時ダウンロード数の制限
 const downloadQueue = [];
-const MAX_CONCURRENT_DOWNLOADS = 2; // 同時ダウンロード数を2に減らす
-const DOWNLOAD_DELAY = 2000; // ダウンロード間に2秒の遅延を追加
+const MAX_CONCURRENT_DOWNLOADS = 1; // 同時ダウンロード数を1に減らす
+const DOWNLOAD_DELAY = 3000; // ダウンロード間に3秒の遅延を追加
+const RETRY_ATTEMPTS = 3;  // ダウンロード失敗時の再試行回数
 let activeDownloads = 0;
 
 // デバッグログ
@@ -14,6 +15,10 @@ const DEBUG = true;
 function logDebug(...args) {
   if (DEBUG) console.log('[メルカリ画像ダウンローダー]', ...args);
 }
+
+// 成功 / 失敗カウンター
+let successCount = 0;
+let failureCount = 0;
 
 // メッセージリスナーを設定
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -23,7 +28,8 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // キューにダウンロード要求を追加
     downloadQueue.push({
       url: message.url,
-      filename: message.filename
+      filename: message.filename,
+      attempts: 0  // 試行回数初期化
     });
     
     // キュー処理を開始
@@ -49,7 +55,7 @@ function processDownloadQueue() {
   const download = downloadQueue.shift();
   activeDownloads++;
   
-  logDebug(`ダウンロード開始: ${download.filename} (アクティブ: ${activeDownloads}/${MAX_CONCURRENT_DOWNLOADS})`);
+  logDebug(`ダウンロード開始: ${download.filename} (アクティブ: ${activeDownloads}/${MAX_CONCURRENT_DOWNLOADS}, 試行: ${download.attempts + 1}/${RETRY_ATTEMPTS})`);
   
   // 遅延を追加してからダウンロードを実行
   setTimeout(() => {
@@ -57,7 +63,8 @@ function processDownloadQueue() {
     browser.downloads.download({
       url: download.url,
       filename: download.filename,
-      conflictAction: 'uniquify'
+      conflictAction: 'uniquify',
+      saveAs: false
     }).then(downloadId => {
       logDebug(`ダウンロードID: ${downloadId} を開始`);
       
@@ -66,6 +73,7 @@ function processDownloadQueue() {
         if (delta.id === downloadId && delta.state) {
           if (delta.state.current === 'complete') {
             logDebug(`ダウンロード完了: ${download.filename}`);
+            successCount++;
             
             // リスナーを削除
             browser.downloads.onChanged.removeListener(listener);
@@ -87,21 +95,44 @@ function processDownloadQueue() {
             // アクティブダウンロード数を減らす
             activeDownloads--;
             
-            // エラーが発生した場合も遅延を設けて次のダウンロードを処理
+            // 再試行するかどうか判断
+            if (download.attempts < RETRY_ATTEMPTS - 1) {
+              logDebug(`ダウンロードを再試行します: ${download.filename} (${download.attempts + 1}/${RETRY_ATTEMPTS})`);
+              download.attempts++;
+              // キューの先頭に再追加
+              downloadQueue.unshift(download);
+            } else {
+              failureCount++;
+              logDebug(`最大試行回数に達しました: ${download.filename}`);
+            }
+            
+            // エラーが発生した場合、より長い遅延を設けて次のダウンロードを処理
             setTimeout(() => {
               processDownloadQueue();
-            }, DOWNLOAD_DELAY);
+            }, DOWNLOAD_DELAY * 2);
           }
         }
       });
     }).catch(error => {
       logDebug(`ダウンロードエラー: ${download.filename}`, error);
+      
       activeDownloads--;
       
-      // エラーが発生した場合も遅延を設けて次のダウンロードを処理
+      // 再試行するかどうか判断
+      if (download.attempts < RETRY_ATTEMPTS - 1) {
+        logDebug(`ダウンロードを再試行します: ${download.filename} (${download.attempts + 1}/${RETRY_ATTEMPTS})`);
+        download.attempts++;
+        // キューの先頭に再追加
+        downloadQueue.unshift(download);
+      } else {
+        failureCount++;
+        logDebug(`最大試行回数に達しました: ${download.filename}`);
+      }
+      
+      // エラーが発生した場合、より長い遅延を設けて次のダウンロードを処理
       setTimeout(() => {
         processDownloadQueue();
-      }, DOWNLOAD_DELAY);
+      }, DOWNLOAD_DELAY * 2);
     });
   }, DOWNLOAD_DELAY);
 }
@@ -109,6 +140,9 @@ function processDownloadQueue() {
 // アドオンのインストール/更新時に実行
 browser.runtime.onInstalled.addListener(details => {
   logDebug('メルカリ商品画像ダウンローダーがインストールされました', details);
+  // カウンターリセット
+  successCount = 0;
+  failureCount = 0;
 });
 
 // ダウンロード進捗リスナー
