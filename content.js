@@ -5,6 +5,12 @@
 (function() {
   'use strict';
 
+  // 設定
+  const CHECK_DELAY = 500; // 画像存在チェック間の遅延 (ミリ秒)
+  const BATCH_SIZE = 3;    // 一度に処理する画像数
+  const MAX_IMAGES = 40;   // 最大画像枚数
+  const MAX_ERRORS = 3;    // 連続エラー時に終了する数
+
   // ページにダウンロードボタンを追加
   function addDownloadButton() {
     // ボタンがすでに存在する場合は追加しない
@@ -56,6 +62,11 @@
     return status;
   }
 
+  // 指定時間待機する関数
+  function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
   // すべての画像をダウンロード
   async function downloadAllImages() {
     try {
@@ -73,46 +84,60 @@
       // ステータス表示要素を作成
       const status = createStatusElement('ダウンロードを開始します...');
       
-      // 最大40枚試行
-      const MAX_IMAGES = 40;
       let successCount = 0;
       let errorCount = 0;
+      let consecutiveErrors = 0;
       
-      // 同時ダウンロードを制限するため、数枚ずつ処理
-      const BATCH_SIZE = 5;
-      
-      for (let i = 1; i <= MAX_IMAGES; i += BATCH_SIZE) {
-        const batchPromises = [];
-        
-        for (let j = i; j < i + BATCH_SIZE && j <= MAX_IMAGES; j++) {
-          batchPromises.push(processImage(itemId, j));
-        }
-        
-        const results = await Promise.all(batchPromises);
-        
-        // 結果を集計
-        results.forEach(result => {
-          if (result.success) {
-            successCount++;
-          } else {
+      // バッチ処理でループ
+      for (let i = 1; i <= MAX_IMAGES; i++) {
+        try {
+          // 画像の存在チェック (遅延を入れる)
+          await sleep(CHECK_DELAY);
+          
+          const imageUrl = `https://static.mercdn.net/item/detail/orig/photos/${itemId}_${i}.jpg`;
+          const response = await fetch(imageUrl, { method: 'HEAD' });
+          
+          if (!response.ok) {
             errorCount++;
+            consecutiveErrors++;
+            // 連続エラーの場合、終了判定
+            if (consecutiveErrors >= MAX_ERRORS) {
+              break;
+            }
+            continue;
           }
-        });
-        
-        // 3枚連続で画像が取得できなければ終了
-        if (results.filter(r => !r.success).length >= 3) {
-          break;
+          
+          // エラーカウントリセット (連続ではない)
+          consecutiveErrors = 0;
+          
+          // ダウンロード要求を送信
+          browser.runtime.sendMessage({
+            action: 'downloadImage',
+            url: imageUrl,
+            filename: `${itemId}/${itemId}_${i}.jpg`
+          });
+          
+          successCount++;
+          // ステータス更新 (5枚ごと)
+          if (successCount % 5 === 0 || successCount === 1) {
+            status.innerText = `${successCount}枚の画像をダウンロード中...`;
+          }
+          
+        } catch (err) {
+          console.error(`画像${i}の処理中にエラー: ${err.message}`);
+          errorCount++;
+          consecutiveErrors++;
+          if (consecutiveErrors >= MAX_ERRORS) {
+            break;
+          }
         }
-        
-        // ステータス更新
-        status.innerText = `${successCount}枚の画像をダウンロード中...`;
       }
       
       // ダウンロード完了メッセージ
       if (successCount > 0) {
         status.innerText = `ダウンロード完了: ${successCount}枚の画像を保存しました`;
-        // 5秒後にステータス表示を消す
-        setTimeout(() => status.remove(), 5000);
+        // 7秒後にステータス表示を消す
+        setTimeout(() => status.remove(), 7000);
       } else {
         status.innerText = `画像が見つかりませんでした`;
         setTimeout(() => status.remove(), 3000);
@@ -120,31 +145,6 @@
     } catch (error) {
       console.error('ダウンロード処理エラー:', error);
       alert('画像ダウンロード中にエラーが発生しました: ' + error.message);
-    }
-  }
-
-  // 画像を処理する
-  async function processImage(itemId, index) {
-    const imageUrl = `https://static.mercdn.net/item/detail/orig/photos/${itemId}_${index}.jpg`;
-    
-    try {
-      // 画像の存在チェック
-      const response = await fetch(imageUrl, { method: 'HEAD' });
-      if (!response.ok) {
-        return { success: false, index };
-      }
-      
-      // background scriptに画像ダウンロードを依頼
-      browser.runtime.sendMessage({
-        action: 'downloadImage',
-        url: imageUrl,
-        filename: `${itemId}/${itemId}_${index}.jpg`
-      });
-      
-      return { success: true, index };
-    } catch (err) {
-      console.error(`画像${index}のダウンロード中にエラー: ${err.message}`);
-      return { success: false, index, error: err.message };
     }
   }
 
