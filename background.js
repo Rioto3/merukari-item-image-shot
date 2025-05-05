@@ -5,7 +5,8 @@
 
 // ダウンロードキューと同時ダウンロード数の制限
 const downloadQueue = [];
-const MAX_CONCURRENT_DOWNLOADS = 5;
+const MAX_CONCURRENT_DOWNLOADS = 3; // 同時ダウンロード数を3に減らす
+const DOWNLOAD_DELAY = 1000; // ダウンロード間に1秒の遅延を追加
 let activeDownloads = 0;
 
 // メッセージリスナーを設定
@@ -38,30 +39,39 @@ function processDownloadQueue() {
   const download = downloadQueue.shift();
   activeDownloads++;
   
-  // ダウンロードを開始
-  browser.downloads.download({
-    url: download.url,
-    filename: download.filename,
-    conflictAction: 'uniquify'
-  }).then(downloadId => {
-    // ダウンロード完了リスナーを設定
-    const listener = browser.downloads.onChanged.addListener(delta => {
-      if (delta.id === downloadId && (delta.state?.current === 'complete' || delta.state?.current === 'interrupted')) {
-        // リスナーを削除
-        browser.downloads.onChanged.removeListener(listener);
-        
-        // アクティブダウンロード数を減らす
-        activeDownloads--;
-        
-        // キューに残りがあれば次を処理
+  // 遅延を追加してからダウンロードを実行
+  setTimeout(() => {
+    // ダウンロードを開始
+    browser.downloads.download({
+      url: download.url,
+      filename: download.filename,
+      conflictAction: 'uniquify'
+    }).then(downloadId => {
+      // ダウンロード完了リスナーを設定
+      const listener = browser.downloads.onChanged.addListener(delta => {
+        if (delta.id === downloadId && (delta.state?.current === 'complete' || delta.state?.current === 'interrupted')) {
+          // リスナーを削除
+          browser.downloads.onChanged.removeListener(listener);
+          
+          // アクティブダウンロード数を減らす
+          activeDownloads--;
+          
+          // 少し待ってから次のダウンロードを処理
+          setTimeout(() => {
+            processDownloadQueue();
+          }, DOWNLOAD_DELAY);
+        }
+      });
+    }).catch(error => {
+      console.error('ダウンロードエラー:', error);
+      activeDownloads--;
+      
+      // エラーが発生した場合も遅延を設けて次のダウンロードを処理
+      setTimeout(() => {
         processDownloadQueue();
-      }
+      }, DOWNLOAD_DELAY);
     });
-  }).catch(error => {
-    console.error('ダウンロードエラー:', error);
-    activeDownloads--;
-    processDownloadQueue();
-  });
+  }, DOWNLOAD_DELAY);
 }
 
 // アドオンのインストール/更新時に実行
