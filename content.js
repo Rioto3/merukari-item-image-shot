@@ -72,6 +72,66 @@
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
+  // 代替ダウンロード方法 - Blob URLを使用したダウンロード
+  async function alternativeDownload(url, filename) {
+    logDebug(`代替ダウンロード方法を使用: ${url}`);
+    try {
+      // 進捗状況表示
+      const status = document.getElementById('mercari-dl-status');
+      if (status) {
+        status.innerText = `代替ダウンロード方法で保存中: ${filename}`;
+      }
+      
+      // 画像をフェッチ
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`画像の取得に失敗しました: ${response.status} ${response.statusText}`);
+      }
+      
+      // Blobに変換
+      const blob = await response.blob();
+      
+      // Blob URLの作成とダウンロード
+      const objectUrl = URL.createObjectURL(blob);
+      
+      // ダウンロードリンク作成
+      const a = document.createElement('a');
+      a.href = objectUrl;
+      
+      // ファイル名を設定（フォルダは無視）
+      const fileName = filename.split('/').pop();
+      a.download = fileName;
+      
+      // 非表示でDOMに追加
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      
+      // クリックイベントを発火
+      a.click();
+      
+      // 不要になったら削除
+      setTimeout(() => {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(objectUrl);
+      }, 100);
+      
+      if (status) {
+        status.innerText = `保存しました: ${fileName}`;
+      }
+      
+      // 成功をbackgroundスクリプトに通知
+      browser.runtime.sendMessage({
+        action: 'downloadSuccess',
+        filename: filename
+      });
+      
+      return true;
+    } catch (error) {
+      logDebug(`代替ダウンロードエラー: ${error.message}`);
+      return false;
+    }
+  }
+
   // 画像URLを確認 (より多くのパターンに対応)
   async function checkImageUrl(itemId, index) {
     // 試行するパターンのリスト
@@ -234,6 +294,14 @@
       }
     }
   }
+
+  // バックグラウンドからの代替ダウンロード要求を受け取る
+  browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.action === 'alternativeDownload') {
+      logDebug('代替ダウンロード要求を受信:', message.url);
+      alternativeDownload(message.url, message.filename);
+    }
+  });
 
   // ページ読み込み完了時にボタンを追加
   window.addEventListener('load', addDownloadButton);
