@@ -63,8 +63,13 @@
 
   // ページにダウンロードボタンを追加
   function addDownloadButton() {
+    logDebug('ダウンロードボタン追加処理を開始');
+    
     // ボタンがすでに存在する場合は追加しない
-    if (document.getElementById('mercari-image-dl-button')) return;
+    if (document.getElementById('mercari-image-dl-button')) {
+      logDebug('ボタンはすでに存在します');
+      return;
+    }
 
     // ヘッダー要素を取得
     const header = document.querySelector('header');
@@ -79,6 +84,7 @@
         button.style.right = '20px';
         button.style.zIndex = '10000';
         body.appendChild(button);
+        logDebug('ボタンをbodyに追加しました');
       }
       return;
     }
@@ -86,6 +92,7 @@
     // ボタンを作成して追加
     const button = createDownloadButton();
     header.appendChild(button);
+    logDebug('ボタンをヘッダーに追加しました');
   }
 
   // ダウンロードボタンを作成
@@ -286,9 +293,9 @@
     // サムネイルから高解像度URLへの変換パターン
     const patterns = [
       // 画像番号を抽出して高解像度URLを生成
-      { regex: /\/(\\d+)\\.jpg/, template: `https://static.mercdn.net/item/detail/orig/photos/${itemId}_$1.jpg` },
+      { regex: /\/(\d+)\.jpg/, template: `https://static.mercdn.net/item/detail/orig/photos/${itemId}_$1.jpg` },
       // 画像番号が名前に含まれていない場合、1枚目と仮定
-      { regex: /item\\/detail\\//, template: `https://static.mercdn.net/item/detail/orig/photos/${itemId}_1.jpg` }
+      { regex: /item\/detail\//, template: `https://static.mercdn.net/item/detail/orig/photos/${itemId}_1.jpg` }
     ];
     
     for (const pattern of patterns) {
@@ -306,7 +313,7 @@
     try {
       // 商品IDを取得
       const url = window.location.href;
-      const itemIdMatch = url.match(/\\/item\\/([^/?]+)/);
+      const itemIdMatch = url.match(/\/item\/([^/?]+)/);
       
       if (!itemIdMatch || !itemIdMatch[1]) {
         alert('商品IDが取得できませんでした');
@@ -409,15 +416,42 @@
     }
   });
 
-  // ページ読み込み完了時にボタンを追加
+  // DOMの準備ができたらボタンを追加（より早い段階で実行）
+  function initializeExtension() {
+    logDebug('拡張機能の初期化を開始');
+    addDownloadButton();
+    
+    // DOMが変更された場合にもボタン追加を試みる（SPAサイト対応）
+    const observer = new MutationObserver(() => {
+      if (!document.getElementById('mercari-image-dl-button')) {
+        addDownloadButton();
+      }
+    });
+    
+    // ボディ要素の監視を開始
+    if (document.body) {
+      observer.observe(document.body, { 
+        childList: true, 
+        subtree: true 
+      });
+      logDebug('MutationObserverを設定しました');
+    } else {
+      // bodyがまだ存在しない場合は少し待ってから再試行
+      setTimeout(initializeExtension, 500);
+      logDebug('bodyが見つからないため、再試行をスケジュールしました');
+    }
+  }
+  
+  // ページ読み込み完了時にボタンを追加（より遅いが確実なタイミング）
   window.addEventListener('load', addDownloadButton);
   
-  // DOMが変更された場合にもボタン追加を試みる（SPAサイト対応）
-  const observer = new MutationObserver(function(mutations) {
-    if (!document.getElementById('mercari-image-dl-button')) {
-      addDownloadButton();
-    }
-  });
+  // DOMContentLoadedでも試行（早いタイミング）
+  document.addEventListener('DOMContentLoaded', initializeExtension);
   
-  observer.observe(document.body, { childList: true, subtree: true });
+  // 即時実行（さらに早いタイミング）
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initializeExtension);
+  } else {
+    initializeExtension();
+  }
 })();
