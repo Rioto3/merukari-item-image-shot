@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Mercari Image Downloader",
-  "version": "1.1",
+  "version": "1.2",
   "description": "メルカリ商品画像を一括ダウンロードするアドオン",
   "permissions": [
     "activeTab",
