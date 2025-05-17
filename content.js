@@ -16,6 +16,51 @@
     if (DEBUG) console.log('[メルカリ画像ダウンローダー]', ...args);
   }
 
+  // 現在の日付をYYMMDD形式で取得する関数
+  function getCurrentDateYYMMDD() {
+    const now = new Date();
+    const yy = String(now.getFullYear()).slice(-2); // 年の下2桁
+    const mm = String(now.getMonth() + 1).padStart(2, '0'); // 月（ゼロ埋め）
+    const dd = String(now.getDate()).padStart(2, '0'); // 日（ゼロ埋め）
+    return `${yy}${mm}${dd}`;
+  }
+
+  // 商品タイトルを取得する関数
+  function getItemTitle() {
+    // metaタグからタイトルを取得（SEO情報）
+    const metaTitle = document.querySelector('meta[property="og:title"]');
+    if (metaTitle && metaTitle.content) {
+      let title = metaTitle.content.trim();
+      
+      // 先頭の【.*】を削除
+      title = title.replace(/^【.*?】/, '').trim();
+      
+      // ファイル名に使えない文字を置換
+      title = title.replace(/[\\/:*?"<>|]/g, '_');
+      
+      return title;
+    }
+    
+    // fallback: titleタグからタイトルを取得
+    const pageTitle = document.title;
+    if (pageTitle) {
+      let title = pageTitle.trim();
+      
+      // 先頭の【.*】を削除
+      title = title.replace(/^【.*?】/, '').trim();
+      
+      // サイト名を除去 (例: "商品名 - メルカリ")
+      title = title.split(' - ')[0].trim();
+      
+      // ファイル名に使えない文字を置換
+      title = title.replace(/[\\/:*?"<>|]/g, '_');
+      
+      return title;
+    }
+    
+    return "no_title"; // タイトルが取得できない場合のデフォルト値
+  }
+
   // ページにダウンロードボタンを追加
   function addDownloadButton() {
     // ボタンがすでに存在する場合は追加しない
@@ -65,6 +110,16 @@
     status.innerText = message;
     document.body.appendChild(status);
     return status;
+  }
+
+  // ステータスを更新
+  function updateStatus(message) {
+    const status = document.getElementById('mercari-dl-status');
+    if (status) {
+      status.innerText = message;
+    } else {
+      createStatusElement(message);
+    }
   }
 
   // 指定時間待機する関数
@@ -179,12 +234,79 @@
     return { success: false };
   }
 
+  // ページから画像URLを取得する（APIに依存しない方法）
+  function extractImageUrlsFromPage(itemId) {
+    // 画像URLのリスト
+    const imageUrls = [];
+    
+    // 方法1: meta og:image から取得
+    const ogImage = document.querySelector('meta[property="og:image"]');
+    if (ogImage && ogImage.content) {
+      const baseUrl = ogImage.content.split('_')[0]; // 最初の画像のURL
+      if (baseUrl) {
+        imageUrls.push(ogImage.content); // 最初の画像
+      }
+    }
+    
+    // 方法2: img要素から取得
+    const imgElements = document.querySelectorAll('img');
+    imgElements.forEach(img => {
+      const src = img.src || img.dataset.src;
+      if (src && src.includes(itemId) && !imageUrls.includes(src)) {
+        // 高解像度バージョンのURLに変換
+        const highResUrl = convertToHighResUrl(src, itemId);
+        if (highResUrl && !imageUrls.includes(highResUrl)) {
+          imageUrls.push(highResUrl);
+        }
+      }
+    });
+    
+    // 方法3: メルカリの商品詳細ページにあるサムネイルから推測
+    const thumbnails = document.querySelectorAll('div[role="button"] img');
+    thumbnails.forEach((thumb, index) => {
+      // サムネイルがあれば対応する高解像度画像のURL生成を試みる
+      const patternUrl = `https://static.mercdn.net/item/detail/orig/photos/${itemId}_${index + 1}.jpg`;
+      if (!imageUrls.includes(patternUrl)) {
+        imageUrls.push(patternUrl);
+      }
+    });
+    
+    return [...new Set(imageUrls)]; // 重複を排除
+  }
+
+  // サムネイルURLを高解像度URLに変換
+  function convertToHighResUrl(url, itemId) {
+    if (!url) return null;
+    
+    // すでに高解像度の場合はそのまま返す
+    if (url.includes('/orig/')) {
+      return url;
+    }
+    
+    // サムネイルから高解像度URLへの変換パターン
+    const patterns = [
+      // 画像番号を抽出して高解像度URLを生成
+      { regex: /\/(\\d+)\\.jpg/, template: `https://static.mercdn.net/item/detail/orig/photos/${itemId}_$1.jpg` },
+      // 画像番号が名前に含まれていない場合、1枚目と仮定
+      { regex: /item\\/detail\\//, template: `https://static.mercdn.net/item/detail/orig/photos/${itemId}_1.jpg` }
+    ];
+    
+    for (const pattern of patterns) {
+      const match = url.match(pattern.regex);
+      if (match) {
+        return pattern.template.replace('$1', match[1]);
+      }
+    }
+    
+    return null;
+  }
+
   // すべての画像をダウンロード
   async function downloadAllImages() {
     try {
       // 商品IDを取得
       const url = window.location.href;
-      const itemIdMatch = url.match(/\/item\/([^/?]+)/);
+      const itemIdMatch = url.match(/\\/item\\/([^/?]+)/);
       
       if (!itemIdMatch || !itemIdMatch[1]) {
         alert('商品IDが取得できませんでした');
@@ -194,17 +316,19 @@
       const itemId = itemIdMatch[1];
       logDebug(`商品ID: ${itemId}`);
       
-      // 直接DOM内から画像数を判断する試み
-      const domImages = document.querySelectorAll('img[src*="' + itemId + '"]');
-      let estimatedImageCount = domImages.length > 0 ? domImages.length : MAX_IMAGES;
-      logDebug(`推定画像数: ${estimatedImageCount}`);
+      // 商品タイトルを取得
+      const itemTitle = getItemTitle();
+      logDebug(`商品タイトル: ${itemTitle}`);
+      
+      // 日付を取得
+      const currentDate = getCurrentDateYYMMDD();
+      
+      // フォルダ名を生成
+      const folderName = `${currentDate}-${itemTitle}`;
+      logDebug(`保存フォルダ名: ${folderName}`);
       
       // ステータス表示要素を作成
-      const status = createStatusElement('ダウンロードを開始します...');
-      
-      let successCount = 0;
-      let errorCount = 0;
-      let consecutiveErrors = 0;
+      const status = createStatusElement('画像を探しています...');
       
       // ダウンロードボタンを無効化
       const button = document.getElementById('mercari-image-dl-button');
@@ -213,78 +337,60 @@
         button.innerText = 'ダウンロード中...';
       }
       
-      // 画像取得ループ
-      for (let i = 1; i <= Math.max(estimatedImageCount + 5, MAX_IMAGES); i++) {
-        try {
-          // 状況表示を更新
-          status.innerText = `画像を探しています... (${i}/${Math.min(estimatedImageCount + 5, MAX_IMAGES)})`;
-          
-          // 画像の存在チェック (遅延を入れる)
-          await sleep(CHECK_DELAY);
-          
-          // 複数パターンで画像URLをチェック
-          const result = await checkImageUrl(itemId, i);
-          
-          if (!result.success) {
-            logDebug(`画像${i}が見つかりませんでした`);
-            errorCount++;
-            consecutiveErrors++;
-            
-            // 連続エラーの場合、終了判定
-            if (consecutiveErrors >= MAX_ERRORS) {
-              logDebug(`${MAX_ERRORS}回連続でエラーが発生したため終了します`);
-              break;
-            }
-            continue;
-          }
-          
-          // エラーカウントリセット (連続ではない)
-          consecutiveErrors = 0;
-          
-          // ダウンロード要求を送信
-          browser.runtime.sendMessage({
-            action: 'downloadImage',
-            url: result.url,
-            filename: `${itemId}/${itemId}_${i}.jpg`
-          });
-          
-          logDebug(`画像${i}のダウンロードを開始しました: ${result.url}`);
-          
-          successCount++;
-          // ステータス更新 (1枚ごと)
-          status.innerText = `${successCount}枚の画像をダウンロード中...`;
-          
-          // 成功したら少し待機
-          await sleep(1000);
-          
-        } catch (err) {
-          logDebug(`画像${i}の処理中にエラー: ${err.message}`);
-          errorCount++;
-          consecutiveErrors++;
-          if (consecutiveErrors >= MAX_ERRORS) {
-            break;
-          }
+      // ページから画像URLを抽出
+      const imageUrls = extractImageUrlsFromPage(itemId);
+      logDebug(`ページから ${imageUrls.length} 個の画像URLを抽出しました`, imageUrls);
+      
+      if (imageUrls.length === 0) {
+        updateStatus('画像が見つかりませんでした。');
+        if (button) {
+          button.disabled = false;
+          button.innerText = '画像一括保存';
         }
+        return;
       }
       
-      // ダウンロード完了メッセージ
-      if (successCount > 0) {
-        status.innerText = `ダウンロード完了: ${successCount}枚の画像を保存しました`;
-        // 10秒後にステータス表示を消す
-        setTimeout(() => status.remove(), 10000);
-      } else {
-        status.innerText = `画像が見つかりませんでした`;
-        setTimeout(() => status.remove(), 3000);
-      }
+      updateStatus(`${imageUrls.length}枚の画像をダウンロードします...`);
       
-      // ボタンを再度有効化
-      if (button) {
-        button.disabled = false;
-        button.innerText = '画像一括保存';
-      }
+      // バックグラウンドスクリプトに一括ダウンロード要求を送信
+      browser.runtime.sendMessage({
+        action: 'directDownload',
+        urls: imageUrls,
+        itemId: itemId,
+        folderName: folderName
+      });
+      
+      // ダウンロード進捗と完了を待機するためのメッセージリスナー
+      browser.runtime.onMessage.addListener(function messageListener(message) {
+        if (message.action === 'downloadProgress') {
+          updateStatus(`画像 ${message.current}/${message.total} をダウンロード中...`);
+        }
+        else if (message.action === 'downloadError') {
+          logDebug(`画像 ${message.index + 1} のダウンロードに失敗: ${message.error}`);
+        }
+        else if (message.action === 'allDownloadsComplete') {
+          updateStatus(`ダウンロード完了: ${imageUrls.length}枚の画像を保存しました`);
+          
+          // ボタンを再度有効化
+          if (button) {
+            button.disabled = false;
+            button.innerText = '画像一括保存';
+          }
+          
+          // リスナーを削除
+          browser.runtime.onMessage.removeListener(messageListener);
+          
+          // 10秒後にステータス表示を消す
+          setTimeout(() => {
+            const status = document.getElementById('mercari-dl-status');
+            if (status) status.remove();
+          }, 10000);
+        }
+      });
+      
     } catch (error) {
       console.error('ダウンロード処理エラー:', error);
-      alert('画像ダウンロード中にエラーが発生しました: ' + error.message);
+      updateStatus(`エラーが発生しました: ${error.message}`);
       
       // エラー時もボタンを再度有効化
       const button = document.getElementById('mercari-image-dl-button');
