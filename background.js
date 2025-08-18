@@ -6,7 +6,7 @@
 // ダウンロードキューと同時ダウンロード数の制限
 const downloadQueue = [];
 const MAX_CONCURRENT_DOWNLOADS = 1;
-const DOWNLOAD_DELAY = 5000; // 5秒に延長
+const DOWNLOAD_DELAY = 1000; // 5秒に延長
 const RETRY_ATTEMPTS = 3;
 let activeDownloads = 0;
 

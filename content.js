@@ -6,9 +6,7 @@
   'use strict';
 
   // 設定
-  const CHECK_DELAY = 2000;  // 画像存在チェック間の遅延 (ミリ秒) - 2秒に延長
-  const MAX_IMAGES = 40;     // 最大画像枚数
-  const MAX_ERRORS = 8;      // 連続エラー時に終了する数 - 8回に延長
+  const CHECK_DELAY = 1000;  // 画像存在チェック間の遅延 (ミリ秒) - 2秒に延長
 
   // デバッグログ
   const DEBUG = true;
@@ -16,13 +14,14 @@
     if (DEBUG) console.log('[メルカリ画像ダウンローダー]', ...args);
   }
 
-  // 現在の日付をYYMMDD形式で取得する関数
-  function getCurrentDateYYMMDD() {
+  // 現在の日時をmmddHHMM形式で取得する関数
+  function getCurrentDateTimeMMDDHHMM() {
     const now = new Date();
-    const yy = String(now.getFullYear()).slice(-2); // 年の下2桁
     const mm = String(now.getMonth() + 1).padStart(2, '0'); // 月（ゼロ埋め）
     const dd = String(now.getDate()).padStart(2, '0'); // 日（ゼロ埋め）
-    return `${yy}${mm}${dd}`;
+    const HH = String(now.getHours()).padStart(2, '0'); // 時間（ゼロ埋め）
+    const MM = String(now.getMinutes()).padStart(2, '0'); // 分（ゼロ埋め）
+    return `${mm}${dd}${HH}${MM}`;
   }
 
   // 商品タイトルを取得する関数
@@ -215,7 +214,7 @@
       try {
         // HEADリクエストの代わりに少しのデータだけを取得するGETリクエスト
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000); // 5秒タイムアウト
+        const timeoutId = setTimeout(() => controller.abort(), CHECK_DELAY); 
         
         const response = await fetch(url, { 
           method: 'GET',
@@ -241,17 +240,37 @@
     return { success: false };
   }
 
-  // ページから画像URLを取得する（APIに依存しない方法）
+  // 画像番号をURLから抽出する関数
+  function extractImageNumber(url, itemId) {
+    // itemId_数字.jpg の形式から数字を抽出
+    const pattern = new RegExp(`${itemId}_(\\d+)\\.`);
+    const match = url.match(pattern);
+    return match ? parseInt(match[1], 10) : null;
+  }
+
+  // URLを正規化する関数（重複チェック用）
+  function normalizeImageUrl(url, itemId, imageNumber) {
+    // 標準形式に統一: https://static.mercdn.net/item/detail/orig/photos/{itemId}_{number}.jpg
+    return `https://static.mercdn.net/item/detail/orig/photos/${itemId}_${imageNumber}.jpg`;
+  }
+
+  // ページから画像URLを取得する（改良版：重複を防ぐ）
   function extractImageUrlsFromPage(itemId) {
-    // 画像URLのリスト
+    // 画像番号ベースで管理（重複を防ぐ）
+    const imageNumbers = new Set();
     const imageUrls = [];
     
-    // 方法1: meta og:image から取得
+    logDebug('画像URL抽出を開始:', itemId);
+    
+    // 方法1: meta og:image から取得（通常1枚目）
     const ogImage = document.querySelector('meta[property="og:image"]');
-    if (ogImage && ogImage.content) {
-      const baseUrl = ogImage.content.split('_')[0]; // 最初の画像のURL
-      if (baseUrl) {
-        imageUrls.push(ogImage.content); // 最初の画像
+    if (ogImage && ogImage.content && ogImage.content.includes(itemId)) {
+      const imageNumber = extractImageNumber(ogImage.content, itemId);
+      if (imageNumber && !imageNumbers.has(imageNumber)) {
+        imageNumbers.add(imageNumber);
+        const normalizedUrl = normalizeImageUrl(ogImage.content, itemId, imageNumber);
+        imageUrls.push(normalizedUrl);
+        logDebug(`og:imageから画像${imageNumber}を追加:`, normalizedUrl);
       }
     }
     
@@ -259,26 +278,48 @@
     const imgElements = document.querySelectorAll('img');
     imgElements.forEach(img => {
       const src = img.src || img.dataset.src;
-      if (src && src.includes(itemId) && !imageUrls.includes(src)) {
-        // 高解像度バージョンのURLに変換
-        const highResUrl = convertToHighResUrl(src, itemId);
-        if (highResUrl && !imageUrls.includes(highResUrl)) {
-          imageUrls.push(highResUrl);
+      if (src && src.includes(itemId)) {
+        const imageNumber = extractImageNumber(src, itemId);
+        if (imageNumber && !imageNumbers.has(imageNumber)) {
+          imageNumbers.add(imageNumber);
+          const normalizedUrl = normalizeImageUrl(src, itemId, imageNumber);
+          imageUrls.push(normalizedUrl);
+          logDebug(`img要素から画像${imageNumber}を追加:`, normalizedUrl);
         }
       }
     });
     
-    // 方法3: メルカリの商品詳細ページにあるサムネイルから推測
-    const thumbnails = document.querySelectorAll('div[role="button"] img');
+    // 方法3: サムネイル要素から推測（メルカリの商品詳細ページの構造を利用）
+    const thumbnails = document.querySelectorAll('div[role="button"] img, button img');
     thumbnails.forEach((thumb, index) => {
-      // サムネイルがあれば対応する高解像度画像のURL生成を試みる
-      const patternUrl = `https://static.mercdn.net/item/detail/orig/photos/${itemId}_${index + 1}.jpg`;
-      if (!imageUrls.includes(patternUrl)) {
-        imageUrls.push(patternUrl);
+      const src = thumb.src || thumb.dataset.src;
+      if (src && src.includes(itemId)) {
+        const imageNumber = extractImageNumber(src, itemId);
+        if (imageNumber && !imageNumbers.has(imageNumber)) {
+          imageNumbers.add(imageNumber);
+          const normalizedUrl = normalizeImageUrl(src, itemId, imageNumber);
+          imageUrls.push(normalizedUrl);
+          logDebug(`サムネイルから画像${imageNumber}を追加:`, normalizedUrl);
+        }
       }
     });
     
-    return [...new Set(imageUrls)]; // 重複を排除
+    // 方法4: 画像が1枚も見つからない場合、順番に試す
+    if (imageUrls.length === 0) {
+      logDebug('ページから画像が見つからないため、順次試行します');
+      // 最低限1枚目は試す
+      imageNumbers.add(1);
+      imageUrls.push(normalizeImageUrl('', itemId, 1));
+      logDebug('画像1を追加:', imageUrls[0]);
+    }
+    
+    // 番号順にソート
+    const sortedUrls = Array.from(imageNumbers)
+      .sort((a, b) => a - b)
+      .map(num => normalizeImageUrl('', itemId, num));
+    
+    logDebug(`最終的に${sortedUrls.length}個の画像URLを抽出:`, sortedUrls);
+    return sortedUrls;
   }
 
   // サムネイルURLを高解像度URLに変換
@@ -290,19 +331,10 @@
       return url;
     }
     
-    // サムネイルから高解像度URLへの変換パターン
-    const patterns = [
-      // 画像番号を抽出して高解像度URLを生成
-      { regex: /\/(\d+)\.jpg/, template: `https://static.mercdn.net/item/detail/orig/photos/${itemId}_$1.jpg` },
-      // 画像番号が名前に含まれていない場合、1枚目と仮定
-      { regex: /item\/detail\//, template: `https://static.mercdn.net/item/detail/orig/photos/${itemId}_1.jpg` }
-    ];
-    
-    for (const pattern of patterns) {
-      const match = url.match(pattern.regex);
-      if (match) {
-        return pattern.template.replace('$1', match[1]);
-      }
+    // 画像番号を抽出
+    const imageNumber = extractImageNumber(url, itemId);
+    if (imageNumber) {
+      return normalizeImageUrl(url, itemId, imageNumber);
     }
     
     return null;
@@ -327,11 +359,11 @@
       const itemTitle = getItemTitle();
       logDebug(`商品タイトル: ${itemTitle}`);
       
-      // 日付を取得
-      const currentDate = getCurrentDateYYMMDD();
+      // 日時を取得
+      const currentDateTime = getCurrentDateTimeMMDDHHMM();
       
       // フォルダ名を生成
-      const folderName = `${currentDate}-${itemTitle}`;
+      const folderName = `${itemTitle}-${currentDateTime}`;
       logDebug(`保存フォルダ名: ${folderName}`);
       
       // ステータス表示要素を作成
